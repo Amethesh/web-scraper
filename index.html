@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Streaming API Response</title>
+    <script>
+      async function fetchAndStream() {
+        const question = document.getElementById("question").value;
+        const urlInput = document.getElementById("url").value;
+
+        if (!question || !urlInput) {
+          alert("Please enter both the question and the URL.");
+          return;
+        }
+
+        const url = "http://127.0.0.1:8000/api/v1/summarize";
+        const data = {
+          question: question,
+          url: urlInput,
+        };
+
+        const responseElement = document.getElementById("response");
+        responseElement.innerHTML = ""; // Clear previous response
+
+        try {
+          const response = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(data),
+          });
+
+          if (!response.body) {
+            responseElement.innerHTML = "Error: Response body is null";
+            return;
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder("utf-8");
+
+          let done = false;
+          let buffer = "";
+          while (!done) {
+            const { value, done: readerDone } = await reader.read();
+            done = readerDone;
+            if (value) {
+              const chunk = decoder.decode(value, { stream: true });
+              buffer += chunk;
+
+              // Process and display messages as Markdown
+              const messages = buffer.split(/(?<=\\})/);
+              buffer = messages.pop(); // Save incomplete message for next chunk
+
+              messages.forEach((message) => {
+                try {
+                  const parsed = JSON.parse(message.trim());
+                  if (parsed.response) {
+                    responseElement.innerHTML += `<p>${marked(
+                      parsed.response
+                    )}</p>`;
+                    responseElement.scrollTop = responseElement.scrollHeight; // Scroll to the bottom
+                  }
+                } catch (e) {
+                  // Ignore incomplete or malformed JSON
+                  console.warn("Skipping incomplete message:", message);
+                }
+              });
+            }
+          }
+        } catch (error) {
+          console.error("Error fetching the response:", error);
+          responseElement.innerHTML = "Error: Unable to fetch the response.";
+        }
+      }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  </head>
+  <body>
+    <h1>API Streaming Response</h1>
+    <div>
+      <label for="question">Question:</label>
+      <input
+        type="text"
+        id="question"
+        placeholder="Enter your question"
+        style="width: 100%; margin-bottom: 10px"
+      />
+    </div>
+    <div>
+      <label for="url">URL:</label>
+      <input
+        type="text"
+        id="url"
+        placeholder="Enter the URL"
+        style="width: 100%; margin-bottom: 10px"
+      />
+    </div>
+    <button onclick="fetchAndStream()">Fetch and Stream Response</button>
+    <div
+      id="response"
+      style="
+        margin-top: 20px;
+        border: 1px solid #ccc;
+        padding: 10px;
+        background: #f9f9f9;
+        white-space: pre-wrap;
+        height: 300px;
+        overflow-y: auto;
+      "
+    ></div>
+  </body>
+</html>
