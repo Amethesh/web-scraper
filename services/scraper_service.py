@@ -4,8 +4,8 @@ from urllib.parse import urljoin
 import PyPDF2
 import io
 import concurrent.futures
-from typing import List, Tuple, Dict
 import re
+from typing import Dict, Tuple, Set, Optional, List
 
 class ScraperService:
     """
@@ -57,68 +57,99 @@ class ScraperService:
             print(f"Error extracting PDF content from {url}: {str(e)}")
             return f"Error processing PDF: {str(e)}", set()
 
-    def scrape_page_info(self, url: str) -> Tuple[str, set]:
+
+    def scrape_page_info(self, url: str, depth: int = 1, max_depth: int = 2, visited: Optional[Set[str]] = None) -> Dict[str, Tuple[str, Set[str]]]:
         """
-        Scrape content from a webpage or PDF.
-        Returns tuple of (content, links)
+        Recursively scrape content from a webpage or PDF up to max_depth levels.
+        
+        For a given URL, this function scrapes the content and extracts links.
+        If depth < max_depth, it then follows each extracted link and scrapes them too.
+        
+        Returns:
+            A dictionary mapping each URL (str) to a tuple:
+                (cleaned_text_content: str, links: set)
         """
+        if visited is None:
+            visited = set()
+            
+        # Avoid scraping the same URL multiple times.
+        if url in visited:
+            return {}
+        visited.add(url)
+        
         try:
+            # If the URL is a PDF, handle it using the dedicated PDF extraction method.
             if self.is_pdf_link(url):
-                return self.extract_pdf_content(url)
-            
-            # Original web scraping logic
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Selectors for elements to remove (unchanged from original)
-            remove_selectors = [
-                'nav', '.navigation', '#navigation', '.main-nav', '.header-nav',
-                '[class*="nav"]', '[id*="nav"]', 'header', '.header',
-                'footer', '.footer', '#footer', '.site-footer', 
-                '[class*="footer"]', '[id*="footer"]',
-                'form', 'input', 'textarea', 'select', 'button',
-                '.form', '#form', '[class*="form"]', '[id*="form"]',
-                '[type="text"]', '[type="email"]', '[type="password"]',
-                '[type="submit"]', '[type="button"]',
-                '.modal', '#modal', '[class*="modal"]',
-                '.popup', '#popup', '[class*="popup"]',
-                '.sidebar', '#sidebar', '[class*="sidebar"]',
-                'meta', 'comment', '.comment', '#comment',
-                '[class*="comment"]', '[id*="comment"]'
-            ]
-            
-            for selector in remove_selectors:
-                for element in soup.select(selector):
+                content, links = self.extract_pdf_content(url)
+            else:
+                # Fetch the webpage
+                response = requests.get(url, headers=self.headers)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Remove unwanted elements using a list of selectors.
+                remove_selectors = [
+                    'nav', '.navigation', '#navigation', '.main-nav', '.header-nav',
+                    '[class*="nav"]', '[id*="nav"]', 'header', '.header',
+                    'footer', '.footer', '#footer', '.site-footer', 
+                    '[class*="footer"]', '[id*="footer"]',
+                    'form', 'input', 'textarea', 'select', 'button',
+                    '.form', '#form', '[class*="form"]', '[id*="form"]',
+                    '[type="text"]', '[type="email"]', '[type="password"]',
+                    '[type="submit"]', '[type="button"]',
+                    '.modal', '#modal', '[class*="modal"]',
+                    '.popup', '#popup', '[class*="popup"]',
+                    '.sidebar', '#sidebar', '[class*="sidebar"]',
+                    'meta', 'comment', '.comment', '#comment',
+                    '[class*="comment"]', '[id*="comment"]'
+                ]
+                
+                for selector in remove_selectors:
+                    for element in soup.select(selector):
+                        element.decompose()
+                
+                # Also remove specific tags that are typically not content.
+                for element in soup(['script', 'style', 'iframe', 'svg', 'canvas']):
                     element.decompose()
+                
+                # Find all links and map them to their full URL and anchor text.
+                link_map = {}
+                for link in soup.find_all('a', href=True):
+                    full_url = urljoin(url, link['href'])
+                    if full_url.startswith(('http://', 'https://')):
+                        anchor_text = link.get_text(strip=True)
+                        if anchor_text:
+                            link_map[link] = (full_url, anchor_text)
+                
+                # Replace each <a> tag with a markdown-styled link.
+                for link, (full_url, anchor_text) in link_map.items():
+                    md_link_str = NavigableString(f'[{anchor_text}]({full_url})')
+                    link.replace_with(md_link_str)
+                
+                # Remove any remaining empty elements.
+                for element in soup.find_all():
+                    if not element.get_text(strip=True):
+                        element.decompose()
+                
+                # Extract and clean the text.
+                text_content = soup.get_text(separator='\n', strip=True)
+                text_lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                cleaned_text_content = '\n'.join(text_lines)
+                
+                # Gather a set of the full URLs extracted from the link map.
+                links = {full_url for full_url, _ in link_map.values()}
+                content = cleaned_text_content
             
-            for element in soup(['script', 'style', 'iframe', 'svg', 'canvas']):
-                element.decompose()
+            # Store the scraped content and links for the current URL.
+            result = {url: (content, links)}
             
-            link_map = {}
-            for link in soup.find_all('a', href=True):
-                full_url = urljoin(url, link['href'])
-                if full_url.startswith(('http://', 'https://')):
-                    anchor_text = link.get_text(strip=True)
-                    if anchor_text:
-                        link_map[link] = (full_url, anchor_text)
+            # If we haven't reached the maximum depth, recursively scrape each linked URL.
+            if depth < max_depth:
+                for link in links:
+                    # Recursively update the results. The visited set prevents duplicate work.
+                    result.update(self.scrape_page_info(link, depth=depth + 1, max_depth=max_depth, visited=visited))
             
-            for link, (full_url, anchor_text) in link_map.items():
-                md_link_str = NavigableString(f'[{anchor_text}]({full_url})')
-                link.replace_with(md_link_str)
-            
-            for element in soup.find_all():
-                if not element.get_text(strip=True):
-                    element.decompose()
-            
-            text_content = soup.get_text(separator='\n', strip=True)
-            text_lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-            cleaned_text_content = '\n'.join(text_lines)
-            
-            links = set(url for url, _ in link_map.values())
-            
-            return cleaned_text_content, links
+            return result
 
         except Exception as e:
             print(f"Error processing {url}: {str(e)}")

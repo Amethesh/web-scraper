@@ -1,5 +1,6 @@
 import os
 from langchain.chains import RetrievalQA
+from langchain.schema import Document
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_chroma import Chroma
@@ -8,6 +9,7 @@ import json
 import logging
 import requests
 from services.ai_service import ai_chat_service
+from services.scraper_service import scraper_service
 logger = logging.getLogger(__name__)
 
 os.environ['OPENAI_API_KEY'] = os.getenv("OPENAI_API_KEY")
@@ -24,8 +26,12 @@ def load_documents(sources):
                 loader = PyPDFLoader(source)
                 documents.extend(loader.load())
             else:
-                loader = WebBaseLoader(source, verify_ssl=False)
-                documents.extend(loader.load())
+                scraped_results = scraper_service.scrape_page_info(source, max_depth=1)
+                # If the result is a tuple, convert it to a dict with the original source as the key.
+                if isinstance(scraped_results, tuple):
+                    scraped_results = {source: scraped_results}
+                for scraped_url, (content, links) in scraped_results.items():
+                    documents.append(Document(page_content=content, metadata={"source": scraped_url}))
         except ValueError as e:
             logger.warning(f"Skipping {source} due to error: {e}")
         except requests.exceptions.SSLError as e:
@@ -48,7 +54,7 @@ def setup_qa_system(sources):
     # Set up the retrieval-based QA chain
     retriever = vectorstore.as_retriever()
     qa_chain = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(temperature=0),
+        llm=ChatOpenAI(temperature=0, openai_api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o"),
         chain_type="stuff",
         retriever=retriever,
         return_source_documents=True,
