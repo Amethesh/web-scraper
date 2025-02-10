@@ -48,7 +48,7 @@ def setup_qa_system(sources):
 
     # Initialize GPT-4 model
     llm = ChatOpenAI(
-        model="gpt-4", 
+        model="gpt-4o", 
         temperature=0
     )
 
